@@ -1,0 +1,59 @@
+You are creating a new homelab service.
+
+Standards come from the sibling repositories:
+- homelab-standards
+- homelab-infra
+
+These sibling repositories are vendored into this repository under imported/
+and its subdirectories.
+
+STOP and warn immediately if the following directory tree does not exist:
+
+imported/
+├── AGENTS.md
+├── PATTERNS/
+│   └── README.md
+├── REGISTRY.md
+└── registry.schema.yaml
+
+Canonical references:
+- AGENTS.md defines required agent behaviour.
+- imported/PATTERNS/ contains design patterns that SHOULD be consulted if applicable.
+- REGISTRY.md and registry.schema.yaml define the
+  infrastructure registry contract for services (documentation + schema only).
+
+Infrastructure wiring is owned by homelab-infra and must not be duplicated
+or inferred in this repository.
+
+Specification:
+
+Purpose:
+Expose a REST API endpoint that serves GPU status. This endpoint is to be consumed by gethomepage, which uses the following style to output data to a dashboard:
+    - Bots:
+        widget:
+          type: customapi
+          url: http://{{HOMEPAGE_VAR_ADDRESS}}:5000/health
+          refreshInterval: 30000
+          method: GET
+          mappings:
+            - field: status
+              label: Status
+              format: text
+
+I want to expose current GPU temperature, memory available and GPU utilisation. Fields should be pre-formatted. Additionally, log at 30 second intervals for graphing later. This process should run with low priority if possible. Use nvidia-smi --query for this information.
+ 
+Patterns:
+- windows-nssm-service
+or:
+- none
+
+Constraints:
+- Platform: Windows
+- Service type: long-running
+
+Rules:
+- Do not invent structure or conventions.
+- Declare assumptions before implementing.
+- Do not proceed if vendored standards are missing or incomplete.
+
+Clarify where required.
