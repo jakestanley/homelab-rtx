@@ -48,4 +48,5 @@ Configuration is via environment variables (see `.env.example`).
 ## Notes
 
 - `nvidia-smi` must be available on PATH for metrics collection.
+- This service assumes a single primary NVIDIA GPU (index 0).
 - If the service is accessed from another host, `scripts/up.ps1` ensures the Windows Firewall rule exists when run elevated.
