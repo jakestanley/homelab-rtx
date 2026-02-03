@@ -234,6 +234,30 @@ def landing() -> str:
       font-size: 0.88rem;
       color: var(--muted);
     }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin: 0 0 10px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: opacity 120ms ease;
+    }
+    .legend-item.off { opacity: 0.45; }
+    .swatch {
+      width: 14px;
+      height: 0;
+      border-top: 3px solid;
+      border-radius: 999px;
+    }
+    .swatch.temp { border-color: var(--line); }
+    .swatch.util { border-color: var(--line2); }
+    .swatch.mem { border-color: var(--line3); }
     .btn-group { display: flex; gap: 6px; }
     button {
       border: 1px solid #334155;
@@ -254,9 +278,35 @@ def landing() -> str:
       border-radius: 10px;
       border: 1px solid #1f2a3b;
       background: #0b1220;
-      overflow: hidden;
+      overflow: visible;
     }
     canvas { width: 100%; height: min(460px, 60vh); display: block; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 8px;
+      margin: 0 0 10px;
+    }
+    .stat {
+      border: 1px solid #223046;
+      border-radius: 8px;
+      background: #0b1220;
+      padding: 8px 10px;
+    }
+    .stat .label {
+      color: var(--muted);
+      font-size: 0.75rem;
+      margin-bottom: 4px;
+    }
+    .stat .value {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    .stat .meta {
+      color: var(--muted);
+      font-size: 0.72rem;
+      margin-top: 4px;
+    }
     .tooltip {
       position: absolute;
       pointer-events: none;
@@ -267,9 +317,9 @@ def landing() -> str:
       font-size: 0.78rem;
       color: var(--text);
       min-width: 190px;
-      transform: translate(10px, -50%);
       display: none;
       white-space: nowrap;
+      z-index: 10;
     }
     .err { color: #fecaca; margin-top: 8px; font-size: 0.9rem; }
   </style>
@@ -282,6 +332,10 @@ def landing() -> str:
     <div class="controls">
       <span>Range</span>
       <div class="btn-group" id="rangeButtons">
+        <button type="button" data-minutes="5">5m</button>
+        <button type="button" data-minutes="10">10m</button>
+        <button type="button" data-minutes="15">15m</button>
+        <button type="button" data-minutes="30">30m</button>
         <button type="button" data-minutes="60" class="active">1h</button>
         <button type="button" data-minutes="360">6h</button>
         <button type="button" data-minutes="1440">24h</button>
@@ -291,6 +345,32 @@ def landing() -> str:
       <label><input type="checkbox" id="toggleTemp" checked> Temp (C)</label>
       <label><input type="checkbox" id="toggleUtil" checked> Util (%)</label>
       <label><input type="checkbox" id="toggleMem" checked> Mem Free (MiB / 100)</label>
+    </div>
+
+    <div class="legend" aria-label="Chart legend">
+      <span class="legend-item" id="legendTemp"><span class="swatch temp"></span>Temp (C)</span>
+      <span class="legend-item" id="legendUtil"><span class="swatch util"></span>Util (%)</span>
+      <span class="legend-item" id="legendMem"><span class="swatch mem"></span>Mem Free (MiB / 100)</span>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="label">Status</div>
+        <div class="value" id="statStatus">Loading...</div>
+        <div class="meta" id="statTime">--</div>
+      </div>
+      <div class="stat">
+        <div class="label">Temperature</div>
+        <div class="value" id="statTemp">--</div>
+      </div>
+      <div class="stat">
+        <div class="label">GPU Utilization</div>
+        <div class="value" id="statUtil">--</div>
+      </div>
+      <div class="stat">
+        <div class="label">Free Memory</div>
+        <div class="value" id="statMem">--</div>
+      </div>
     </div>
 
     <div class="chart-wrap" id="chartWrap">
@@ -307,13 +387,29 @@ def landing() -> str:
     const tooltip = document.getElementById("tooltip");
     const chartWrap = document.getElementById("chartWrap");
     const rangeButtons = [...document.querySelectorAll("#rangeButtons button")];
+    const statStatus = document.getElementById("statStatus");
+    const statTime = document.getElementById("statTime");
+    const statTemp = document.getElementById("statTemp");
+    const statUtil = document.getElementById("statUtil");
+    const statMem = document.getElementById("statMem");
+    const legendTemp = document.getElementById("legendTemp");
+    const legendUtil = document.getElementById("legendUtil");
+    const legendMem = document.getElementById("legendMem");
+    const SERIES_COLORS = { temp: "#22c55e", util: "#38bdf8", mem: "#fb7185" };
 
     const state = {
       minutes: 60,
       rows: [],
       series: { temp: true, util: true, mem: true },
       hoverIndex: null,
+      hoverPoint: null,
     };
+
+    function syncLegend() {
+      legendTemp.classList.toggle("off", !state.series.temp);
+      legendUtil.classList.toggle("off", !state.series.util);
+      legendMem.classList.toggle("off", !state.series.mem);
+    }
 
     function drawGrid(x0, y0, w, h) {
       ctx.strokeStyle = "#1f2937";
@@ -340,6 +436,48 @@ def landing() -> str:
       ctx.stroke();
     }
 
+    function drawCanvasLegend(x0, y0, w, hoverRow) {
+      const items = [
+        { key: "temp", label: "Temp", color: SERIES_COLORS.temp, value: hoverRow ? `${hoverRow.temperature_c ?? "-"} C` : "" },
+        { key: "util", label: "Util", color: SERIES_COLORS.util, value: hoverRow ? `${hoverRow.utilization_percent ?? "-"} %` : "" },
+        { key: "mem", label: "Mem", color: SERIES_COLORS.mem, value: hoverRow ? `${hoverRow.memory_free_mib ?? "-"} MiB` : "" },
+      ].filter((item) => state.series[item.key]);
+
+      if (!items.length) return;
+
+      const lineHeight = 18;
+      const pad = 8;
+      const boxW = hoverRow ? 210 : 118;
+      const boxH = pad * 2 + items.length * lineHeight;
+      const boxX = x0 + w - boxW - 8;
+      const boxY = y0 + 8;
+
+      ctx.fillStyle = "rgba(2, 6, 23, 0.88)";
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 1;
+      ctx.fillRect(boxX, boxY, boxW, boxH);
+      ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+      ctx.font = "12px Segoe UI, sans-serif";
+      ctx.textBaseline = "middle";
+      items.forEach((item, idx) => {
+        const y = boxY + pad + idx * lineHeight + lineHeight / 2;
+        ctx.strokeStyle = item.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(boxX + 8, y);
+        ctx.lineTo(boxX + 22, y);
+        ctx.stroke();
+
+        ctx.fillStyle = "#cbd5e1";
+        ctx.fillText(item.label, boxX + 28, y);
+        if (hoverRow) {
+          ctx.fillStyle = "#e2e8f0";
+          ctx.fillText(item.value, boxX + 84, y);
+        }
+      });
+    }
+
     function getFilteredRows() {
       const okRows = state.rows.filter((r) => r.status === "ok");
       if (!state.minutes) return okRows;
@@ -360,32 +498,75 @@ def landing() -> str:
       const x0 = 56, y0 = 26, w = canvas.width - 76, h = canvas.height - 62;
       drawGrid(x0, y0, w, h);
 
-      if (state.series.temp) drawSeries(temp, "#22c55e", 100, x0, y0, w, h);
-      if (state.series.util) drawSeries(util, "#38bdf8", 100, x0, y0, w, h);
-      if (state.series.mem) drawSeries(mem, "#fb7185", 100, x0, y0, w, h);
+      if (state.series.temp) drawSeries(temp, SERIES_COLORS.temp, 100, x0, y0, w, h);
+      if (state.series.util) drawSeries(util, SERIES_COLORS.util, 100, x0, y0, w, h);
+      if (state.series.mem) drawSeries(mem, SERIES_COLORS.mem, 100, x0, y0, w, h);
 
-      if (state.hoverIndex == null || !rows.length) {
+      let hoverRow = null;
+      let hoverX = null;
+      if (state.hoverIndex != null && rows.length) {
+        const i = Math.max(0, Math.min(rows.length - 1, state.hoverIndex));
+        hoverRow = rows[i];
+        hoverX = x0 + (i * w) / Math.max(1, rows.length - 1);
+      }
+      drawCanvasLegend(x0, y0, w, hoverRow);
+
+      if (!hoverRow) {
         tooltip.style.display = "none";
         return;
       }
-
-      const i = Math.max(0, Math.min(rows.length - 1, state.hoverIndex));
-      const x = x0 + (i * w) / Math.max(1, rows.length - 1);
       ctx.strokeStyle = "#475569";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(x, y0);
-      ctx.lineTo(x, y0 + h);
+      ctx.moveTo(hoverX, y0);
+      ctx.lineTo(hoverX, y0 + h);
       ctx.stroke();
 
-      const row = rows[i];
       tooltip.innerHTML = [
-        `<strong>${new Date(row.timestamp).toLocaleString()}</strong>`,
-        `Temp: ${row.temperature_c ?? "-"} C`,
-        `Util: ${row.utilization_percent ?? "-"} %`,
-        `Mem: ${row.memory_free_mib ?? "-"} MiB`,
+        `<strong>${new Date(hoverRow.timestamp).toLocaleString()}</strong>`,
+        `Temp: ${hoverRow.temperature_c ?? "-"} C`,
+        `Util: ${hoverRow.utilization_percent ?? "-"} %`,
+        `Mem: ${hoverRow.memory_free_mib ?? "-"} MiB`,
       ].join("<br>");
       tooltip.style.display = "block";
+      if (state.hoverPoint) placeTooltip(state.hoverPoint.x, state.hoverPoint.y);
+    }
+
+    function placeTooltip(pointerX, pointerY) {
+      const pad = 6;
+      const gap = 12;
+      const wrapRect = chartWrap.getBoundingClientRect();
+      const tipRect = tooltip.getBoundingClientRect();
+
+      let left = pointerX + gap;
+      let top = pointerY - tipRect.height / 2;
+
+      if (wrapRect.left + left + tipRect.width > window.innerWidth - pad) {
+        left = pointerX - tipRect.width - gap;
+      }
+
+      left = Math.max(-wrapRect.left + pad, Math.min(left, window.innerWidth - wrapRect.left - tipRect.width - pad));
+      top = Math.max(-wrapRect.top + pad, Math.min(top, window.innerHeight - wrapRect.top - tipRect.height - pad));
+
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+    }
+
+    function renderCurrentStats(payload, errMessage) {
+      if (errMessage) {
+        statStatus.textContent = "Error";
+        statTemp.textContent = "--";
+        statUtil.textContent = "--";
+        statMem.textContent = "--";
+        statTime.textContent = errMessage;
+        return;
+      }
+
+      statStatus.textContent = payload.status || "ok";
+      statTemp.textContent = payload.temperature || "--";
+      statUtil.textContent = payload.gpu_utilization || "--";
+      statMem.textContent = payload.memory_available || "--";
+      statTime.textContent = payload.timestamp ? new Date(payload.timestamp).toLocaleString() : "--";
     }
 
     function pointerToIndex(clientX) {
@@ -413,6 +594,17 @@ def landing() -> str:
       }
     }
 
+    async function loadCurrent() {
+      try {
+        const resp = await fetch("/api");
+        const body = await resp.json();
+        if (!resp.ok || body.status !== "ok") throw new Error(body.error || `HTTP ${resp.status}`);
+        renderCurrentStats(body, null);
+      } catch (err) {
+        renderCurrentStats(null, `Current stats unavailable: ${err.message}`);
+      }
+    }
+
     rangeButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
         state.minutes = Number(btn.dataset.minutes);
@@ -424,32 +616,40 @@ def landing() -> str:
 
     document.getElementById("toggleTemp").addEventListener("change", (e) => {
       state.series.temp = e.target.checked;
+      syncLegend();
       redraw();
     });
     document.getElementById("toggleUtil").addEventListener("change", (e) => {
       state.series.util = e.target.checked;
+      syncLegend();
       redraw();
     });
     document.getElementById("toggleMem").addEventListener("change", (e) => {
       state.series.mem = e.target.checked;
+      syncLegend();
       redraw();
     });
 
     canvas.addEventListener("mousemove", (e) => {
       state.hoverIndex = pointerToIndex(e.clientX);
-      tooltip.style.left = `${e.offsetX}px`;
-      tooltip.style.top = `${e.offsetY}px`;
+      state.hoverPoint = { x: e.offsetX, y: e.offsetY };
       redraw();
     });
 
     canvas.addEventListener("mouseleave", () => {
       state.hoverIndex = null;
+      state.hoverPoint = null;
       tooltip.style.display = "none";
       redraw();
     });
 
     load();
-    setInterval(load, 15000);
+    loadCurrent();
+    syncLegend();
+    setInterval(() => {
+      load();
+      loadCurrent();
+    }, 15000);
   </script>
 </body>
 </html>"""
