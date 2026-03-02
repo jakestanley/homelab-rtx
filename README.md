@@ -104,6 +104,46 @@ The service also writes GPU history to `logs/gpu-metrics.csv` by default.
 - App env template: `.env.example`
 - The service port should be supplied through env/config that aligns with `homelab-infra`; do not change ingress or exposure here.
 
+## NixOS direction
+
+The intended NixOS end state is not a runtime `git clone` into `/srv/rtx`.
+
+- Package the application into the Nix store and run it from an immutable path.
+- Declare the service in NixOS rather than copying `systemd/rtx.service` into `/etc/systemd/system`.
+- Keep mutable state outside the repo checkout, typically under `/var/lib/rtx`.
+- Override `RTX_LOG_PATH` on NixOS so the metrics CSV lives in `/var/lib/rtx/gpu-metrics.csv`.
+
+For that packaging flow, the Python app now exposes a clean `main()` entrypoint in `app.py`, so a future Nix launcher can execute the service without depending on `python app.py` as an ad-hoc convention.
+
+High-level target shape:
+
+```nix
+{
+  systemd.services.rtx = {
+    description = "homelab-rtx GPU telemetry service";
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      DynamicUser = true;
+      StateDirectory = "rtx";
+      WorkingDirectory = "/var/lib/rtx";
+      ExecStart = "${lib.getExe pkgs.homelab-rtx}";
+      Restart = "on-failure";
+      RestartSec = "5s";
+      NoNewPrivileges = true;
+    };
+    environment = {
+      RTX_BIND_HOST = "0.0.0.0";
+      RTX_PORT = "20031";
+      RTX_LOG_PATH = "/var/lib/rtx/gpu-metrics.csv";
+      RTX_LOG_INTERVAL_SECONDS = "30";
+      RTX_QUERY_TIMEOUT_SECONDS = "5";
+    };
+  };
+}
+```
+
+That NixOS expression is documentation for the desired end state only; this repo does not yet ship the Nix package or module that would provide `pkgs.homelab-rtx`.
+
 ## Run manually
 
 Linux:

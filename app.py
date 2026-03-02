@@ -686,10 +686,15 @@ def _bind_port() -> int:
         return DEFAULT_PORT
 
 
-if __name__ == "__main__":
+def main() -> int:
     _set_low_priority_best_effort()
     stop_event = threading.Event()
     thread = threading.Thread(target=_metrics_loop, args=(stop_event,), daemon=True)
     thread.start()
 
     serve(app, host=_bind_host(), port=_bind_port())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
