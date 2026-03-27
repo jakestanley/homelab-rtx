@@ -1,0 +1,13 @@
+services:
+  rtx:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - RTX_LOG_PATH=/app/logs/gpu-metrics.csv
+    ports:
+      - "${RTX_PORT:-20031}:${RTX_PORT:-20031}"
+    volumes:
+      - ${LOG_DIR:-/var/lib/rtx/logs}:/app/logs
+    devices:
+      - "nvidia.com/gpu=all"
