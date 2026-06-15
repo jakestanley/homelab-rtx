@@ -37,12 +37,12 @@
      ```
    - Windows:
      ```powershell
-     .\scripts\install-service.ps1 -Start
+     .\scripts\up.ps1
      ```
 6. Verify logs and runtime state:
    - Linux: `journalctl -u rtx.service -f`
    - Linux metrics CSV: `/srv/rtx/logs/gpu-metrics.csv`
-   - Windows NSSM logs: `logs/nssm-stdout.log`, `logs/nssm-stderr.log`
+   - Windows NSSM logs: `logs/homelab-rtx-stdout.log`, `logs/homelab-rtx-stderr.log`
    - Windows metrics CSV: `logs/gpu-metrics.csv`
 
 ## Linux verification
@@ -55,11 +55,10 @@
 
 ## Windows verification
 
-Re-run the service entrypoint or installer if you need to restore dependencies or the NSSM registration:
+Re-run the service entrypoint to restore dependencies and the NSSM registration (idempotent):
 
 ```powershell
 .\scripts\up.ps1
-.\scripts\install-service.ps1 -Start
 ```
 
 ## Avoid

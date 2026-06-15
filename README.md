@@ -5,7 +5,7 @@ Host-run NVIDIA GPU telemetry service that exposes current status over HTTP for 
 ## Runtime
 
 - Linux: `systemd` via `systemd/rtx.service` and `scripts/up.sh`
-- Windows: NSSM via `scripts/install-service.ps1` and `scripts/up.ps1`
+- Windows: NSSM via `scripts/up.ps1` (install/update/start) and `scripts/uninstall.ps1`
 - HTTP only; TLS, ingress, DNS, and port ownership are managed in `homelab-infra`
 - Service identifier: `rtx`
 
@@ -20,10 +20,13 @@ Host-run NVIDIA GPU telemetry service that exposes current status over HTTP for 
 
 ## Configuration
 
-Configuration is via environment variables.
+Configuration is via environment variables. `.env.example` is the canonical
+template for all deployment modes:
 
-- Local/manual runs: `.env` (see `.env.example`)
-- Linux `systemd`: `/etc/rtx/rtx.env` (see `systemd/rtx.env.example`)
+- Docker Compose: `.env` next to `docker-compose.yml` (via `env_file`)
+- Linux `systemd`: copy `.env.example` to `/etc/rtx/rtx.env`
+- Windows NSSM: `.env` in the repo root; `scripts/up.ps1` pushes all non-
+  `NSSM_*` keys to the service via `AppEnvironmentExtra`
 
 Supported variables:
 
@@ -71,10 +74,10 @@ This repo ships first-class Linux `systemd` assets under `systemd/`. The example
    ```sh
    sudo chown -R rtx:rtx /srv/rtx
    ```
-5. Install the optional environment file template and adjust values if needed:
+5. Install the environment file and adjust values if needed:
    ```sh
    sudo install -d /etc/rtx
-   sudo cp systemd/rtx.env.example /etc/rtx/rtx.env
+   sudo cp .env.example /etc/rtx/rtx.env
    ```
 6. Install the unit:
    ```sh
@@ -144,30 +147,33 @@ High-level target shape:
 
 That NixOS expression is documentation for the desired end state only; this repo does not yet ship the Nix package or module that would provide `pkgs.homelab-rtx`.
 
-## Run manually
-
-Linux:
+## Run manually (Linux)
 
 ```sh
 ./scripts/up.sh
 ```
 
-Windows:
+## Windows NSSM service
+
+`scripts/up.ps1` is the single entrypoint for service creation, updating, and
+starting. It is idempotent: re-run it to apply config changes.
+
+Install / update / start (elevated PowerShell):
 
 ```powershell
 .\scripts\up.ps1
 ```
 
-## Install / update service (elevated PowerShell)
+Force restart if already running:
 
 ```powershell
-.\scripts\install-service.ps1 -Start
+.\scripts\up.ps1 -Restart
 ```
 
-## Uninstall service
+Uninstall:
 
 ```powershell
-.\scripts\install-service.ps1 -Stop -Uninstall
+.\scripts\uninstall.ps1
 ```
 
 ## Logging

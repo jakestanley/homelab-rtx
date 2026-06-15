@@ -1,171 +1,137 @@
 param(
-    [int]$Port,
-    [string]$PythonExe
+    [switch]$Restart
 )
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Split-Path $scriptDir -Parent
+$ErrorActionPreference = "Stop"
+
+# --- per-repo config ---
+$DefaultServiceName = "homelab-rtx"
+$DefaultDisplayName = "homelab-rtx GPU telemetry"
+$DefaultDescription = "Host-run NVIDIA GPU telemetry service"
+$PythonExeEnvKey    = "RTX_PYTHON_EXE"
+$PortEnvKey         = "RTX_PORT"
+$DefaultPort        = "20031"
+$AppParameters      = "app.py"
+# -----------------------
+
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $RepoRoot
+
+function Get-DotEnvLines {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return @() }
+    return @(Get-Content $Path | Where-Object {
+        $_ -and ($_ -notmatch '^\s*#') -and ($_ -match '=')
+    })
+}
 
 function Get-DotEnvValue {
-    param(
-        [string]$Path,
-        [string]$Key
-    )
-    if (-not (Test-Path $Path)) {
-        return $null
-    }
-    foreach ($line in Get-Content $Path) {
-        if ($line -match '^[\s#]') {
-            continue
-        }
+    param([string]$Path, [string]$Key, [string]$Default)
+    foreach ($line in (Get-DotEnvLines $Path)) {
         $parts = $line -split '=', 2
-        if ($parts.Count -lt 2) {
-            continue
-        }
-        if ($parts[0].Trim() -eq $Key) {
+        if ($parts.Count -eq 2 -and $parts[0].Trim() -eq $Key) {
             return $parts[1].Trim()
         }
     }
-    return $null
+    return $Default
 }
 
-function Test-RepoPreflight {
-    param(
-        [string]$Path,
-        [string]$Name
-    )
-
-    if (-not (Test-Path $Path)) {
-        return "Missing repo: $Name ($Path)"
-    }
-
-    $insideRepo = & git -C $Path rev-parse --is-inside-work-tree 2>$null
-    if ($LASTEXITCODE -ne 0 -or $insideRepo -ne "true") {
-        return "Not a git repo: $Name ($Path)"
-    }
-
-    $status = & git -C $Path status --porcelain
-    if ($status) {
-        return "Repo has uncommitted changes: $Name ($Path)"
-    }
-
-    $defaultRef = & git -C $Path symbolic-ref refs/remotes/origin/HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $defaultRef) {
-        $defaultBranch = $defaultRef -replace '^refs/remotes/origin/', ''
-        $currentBranch = & git -C $Path rev-parse --abbrev-ref HEAD
-        if ($currentBranch -ne $defaultBranch) {
-            return "Repo not on default branch ($defaultBranch): $Name ($Path)"
-        }
-        $statusShort = & git -C $Path status -sb
-        if ($statusShort -match 'ahead|behind') {
-            return "Repo not at default branch HEAD: $Name ($Path)"
-        }
-    } else {
-        return "Unable to determine default branch: $Name ($Path)"
-    }
-
-    return $null
+function Test-IsAdmin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return ([Security.Principal.WindowsPrincipal]::new($id)).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-$parentDir = Split-Path $repoRoot -Parent
-$preflightIssues = @()
-$preflightIssues += Test-RepoPreflight -Path (Join-Path $parentDir "homelab-infra") -Name "homelab-infra"
-$preflightIssues += Test-RepoPreflight -Path (Join-Path $parentDir "homelab-standards") -Name "homelab-standards"
-$preflightIssues = $preflightIssues | Where-Object { $_ }
-
-if ($preflightIssues.Count -gt 0) {
-    Write-Warning "Preflight checks failed:"
-    foreach ($issue in $preflightIssues) {
-        Write-Warning "- $issue"
+function Ensure-FirewallRule {
+    param([string]$Port, [string]$RuleName)
+    if (-not $Port) { return }
+    if (-not (Test-IsAdmin)) {
+        Write-Warning "Not elevated; firewall rule for TCP $Port may be missing."
+        Write-Host "Run elevated: New-NetFirewallRule -DisplayName `"$RuleName`" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $Port -Profile Private"
+        return
     }
-    $confirm = Read-Host "Continue anyway? (y/N)"
-    if ($confirm -ne "y") {
-        exit 1
+    $existing = Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow `
+            -Protocol TCP -LocalPort $Port -Profile Private | Out-Null
     }
 }
 
-$envFile = Join-Path $repoRoot ".env"
-$resolvedPort = $Port
-if (-not $resolvedPort) {
-    $resolvedPort = $env:RTX_PORT
-}
-if (-not $resolvedPort) {
-    $resolvedPort = Get-DotEnvValue -Path $envFile -Key "RTX_PORT"
-}
-if (-not $resolvedPort) {
-    $resolvedPort = 20031
-}
-
-$ruleName = "homelab-rtx (TCP $resolvedPort)"
-$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if ($isAdmin) {
-    $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-    if (-not $existingRule) {
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $resolvedPort -Profile Private | Out-Null
-    }
-} else {
-    Write-Warning "Not running elevated; firewall rule may be missing."
-    Write-Host "Run the following in an elevated PowerShell prompt to allow inbound TCP $resolvedPort on Private profile:"
-    Write-Host "New-NetFirewallRule -DisplayName \"$ruleName\" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $resolvedPort -Profile Private"
+function Resolve-BootstrapPython {
+    param([string]$EnvFile, [string]$EnvKey)
+    $candidate = Get-DotEnvValue $EnvFile $EnvKey $null
+    if (-not $candidate -and $EnvKey) { $candidate = (Get-Item "Env:$EnvKey" -ErrorAction SilentlyContinue).Value }
+    if ($candidate -and (Test-Path $candidate)) { return $candidate }
+    $cmd = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($py) { return $py.Source }
+    throw "Python interpreter not found. Set $EnvKey in .env to a full path."
 }
 
-$venvPath = Join-Path $repoRoot ".venv"
+# --- main ---
+$envFile = Join-Path $RepoRoot ".env"
+if (-not (Test-Path $envFile)) {
+    Write-Warning "Missing .env; copy .env.example to .env and edit before running."
+}
+
+$serviceName = Get-DotEnvValue $envFile "NSSM_SERVICE_NAME" $DefaultServiceName
+$displayName = Get-DotEnvValue $envFile "NSSM_DISPLAY_NAME" $DefaultDisplayName
+$description = Get-DotEnvValue $envFile "NSSM_DESCRIPTION" $DefaultDescription
+
+if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
+    throw "nssm not found in PATH. Install NSSM and retry."
+}
+
+$venvPath   = Join-Path $RepoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
-$venvActivate = Join-Path $venvPath "Scripts\Activate.ps1"
-
-function Resolve-PythonPath {
-    param(
-        [string]$Path
-    )
-    if (-not $Path) {
-        return $null
-    }
-    if ($Path -match '^/([a-zA-Z])/') {
-        $drive = $matches[1].ToUpper()
-        return ($Path -replace '^/([a-zA-Z])/', "$drive`:\")
-    }
-    return $Path
-}
-
 if (-not (Test-Path $venvPython)) {
-    $bootstrapCommand = $null
-    $resolvedPythonExe = Resolve-PythonPath -Path $PythonExe
-    $resolvedEnvPython = Resolve-PythonPath -Path $env:RTX_PYTHON_EXE
-    if ($resolvedPythonExe) {
-        $bootstrapCommand = @($resolvedPythonExe)
-    } elseif ($resolvedEnvPython) {
-        $bootstrapCommand = @($resolvedEnvPython)
-    } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-        $bootstrapCommand = @("python")
+    $bootstrap = Resolve-BootstrapPython -EnvFile $envFile -EnvKey $PythonExeEnvKey
+    Write-Host "Creating venv with $bootstrap"
+    if ($bootstrap -match 'py(\.exe)?$') {
+        & $bootstrap -3 -m venv $venvPath
+    } else {
+        & $bootstrap -m venv $venvPath
     }
-
-    if (-not $bootstrapCommand) {
-        throw "Python not found. Install Python 3 and re-run, or pass -PythonExe / set RTX_PYTHON_EXE."
-    }
-
-    & @bootstrapCommand -m venv $venvPath
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
-        throw "Failed to create virtual environment at $venvPath."
-    }
+    if (-not (Test-Path $venvPython)) { throw "venv creation failed at $venvPath" }
 }
 
-if (Test-Path $venvActivate) {
-    . $venvActivate
+& $venvPython -m pip install --upgrade pip
+& $venvPython -m pip install -r (Join-Path $RepoRoot "requirements.txt")
+
+$port = Get-DotEnvValue $envFile $PortEnvKey $DefaultPort
+Ensure-FirewallRule -Port $port -RuleName "$serviceName ($port)"
+
+$logsDir = Join-Path $RepoRoot "logs"
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+
+$svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+if (-not $svc) {
+    & nssm install $serviceName $venvPython $AppParameters | Out-Null
 }
 
-if (Get-Command python -ErrorAction SilentlyContinue) {
-    & python -m pip install -r (Join-Path $repoRoot "requirements.txt")
+& nssm set $serviceName Application $venvPython | Out-Null
+& nssm set $serviceName AppParameters $AppParameters | Out-Null
+& nssm set $serviceName AppDirectory $RepoRoot | Out-Null
+& nssm set $serviceName DisplayName $displayName | Out-Null
+& nssm set $serviceName Description $description | Out-Null
+& nssm set $serviceName AppStdout (Join-Path $logsDir "$serviceName-stdout.log") | Out-Null
+& nssm set $serviceName AppStderr (Join-Path $logsDir "$serviceName-stderr.log") | Out-Null
+
+$appEnvLines = @(Get-DotEnvLines $envFile | Where-Object { $_ -notmatch '^\s*NSSM_' })
+if ($appEnvLines.Count -gt 0) {
+    & nssm set $serviceName AppEnvironmentExtra $appEnvLines | Out-Null
 } else {
-    & $venvPython -m pip install -r (Join-Path $repoRoot "requirements.txt")
-}
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to install dependencies."
+    & nssm reset $serviceName AppEnvironmentExtra 2>$null | Out-Null
 }
 
-if (Get-Command python -ErrorAction SilentlyContinue) {
-    & python (Join-Path $repoRoot "app.py")
+$status = (& nssm status $serviceName).Trim()
+if ($status -eq "SERVICE_RUNNING") {
+    if ($Restart) {
+        & nssm restart $serviceName | Out-Null
+    }
 } else {
-    & $venvPython (Join-Path $repoRoot "app.py")
+    & nssm start $serviceName | Out-Null
 }
+
+Write-Host "Service '$serviceName' applied. Status: $((& nssm status $serviceName).Trim())"
