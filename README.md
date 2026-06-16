@@ -11,12 +11,14 @@ Host-run NVIDIA GPU telemetry service that exposes current status over HTTP for 
 
 ## Endpoints
 
-- `GET /health` (also `/`)
+- `GET /api/health` (also `/api`)
   - Returns:
     - `status` (ok/error)
     - `temperature` (formatted, e.g. `65 C`)
     - `memory_available` (formatted, e.g. `8123 MiB`)
     - `gpu_utilization` (formatted, e.g. `34 %`)
+- `GET /api/history` — recent samples from the metrics CSV
+- `GET /` — HTML landing page with live chart
 
 ## Configuration
 
