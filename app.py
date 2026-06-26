@@ -1,9 +1,11 @@
 import csv
 import ctypes
+import logging
 import os
 import socket
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -12,13 +14,16 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string
 from waitress import serve
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+_log = logging.getLogger(__name__)
+
 load_dotenv()
 
 INFLUX_URL: str | None = os.getenv("RTX_INFLUX_URL") or None
 INFLUX_ORG: str | None = os.getenv("RTX_INFLUX_ORG") or None
 INFLUX_BUCKET: str | None = os.getenv("RTX_INFLUX_BUCKET") or None
 INFLUX_TOKEN: str | None = os.getenv("RTX_INFLUX_TOKEN") or None
-INFLUX_HOST: str = os.getenv("RTX_INFLUX_HOST") or socket.gethostname()
+INFLUX_HOST: str = os.getenv("RTX_HOSTNAME") or socket.gethostname()
 
 APP_NAME = "homelab-rtx"
 DEFAULT_PORT = 20031
@@ -199,18 +204,28 @@ def _write_to_influx(metrics: dict) -> None:
     response.raise_for_status()
 
 
+_SUMMARY_INTERVAL = 300  # seconds
+
 def _metrics_loop(stop_event: threading.Event) -> None:
     interval = _log_interval_seconds()
+    writes_ok = 0
+    last_summary = time.monotonic()
     while not stop_event.is_set():
         try:
             metrics = _read_gpu_metrics()
             _append_log_row(metrics, None)
             try:
                 _write_to_influx(metrics)
+                writes_ok += 1
             except Exception:
-                pass
+                _log.exception("InfluxDB write failed")
         except Exception as exc:
             _append_log_row(None, str(exc))
+        now = time.monotonic()
+        if INFLUX_URL and now - last_summary >= _SUMMARY_INTERVAL:
+            _log.info("InfluxDB: wrote %d points to %s in the last %.0fs", writes_ok, INFLUX_URL, now - last_summary)
+            writes_ok = 0
+            last_summary = now
         stop_event.wait(interval)
 
 
@@ -719,6 +734,14 @@ def _bind_port() -> int:
 
 def main() -> int:
     _set_low_priority_best_effort()
+    _log.info(
+        "InfluxDB publish: url=%s org=%s bucket=%s host=%s token=%s",
+        INFLUX_URL or "(unset)",
+        INFLUX_ORG or "(unset)",
+        INFLUX_BUCKET or "(unset)",
+        INFLUX_HOST,
+        "set" if INFLUX_TOKEN else "unset",
+    )
     stop_event = threading.Event()
     thread = threading.Thread(target=_metrics_loop, args=(stop_event,), daemon=True)
     thread.start()
