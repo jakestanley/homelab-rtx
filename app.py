@@ -1,16 +1,24 @@
 import csv
 import ctypes
 import os
+import socket
 import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string
 from waitress import serve
 
 load_dotenv()
+
+INFLUX_URL: str | None = os.getenv("RTX_INFLUX_URL") or None
+INFLUX_ORG: str | None = os.getenv("RTX_INFLUX_ORG") or None
+INFLUX_BUCKET: str | None = os.getenv("RTX_INFLUX_BUCKET") or None
+INFLUX_TOKEN: str | None = os.getenv("RTX_INFLUX_TOKEN") or None
+INFLUX_HOST: str = os.getenv("RTX_INFLUX_HOST") or socket.gethostname()
 
 APP_NAME = "homelab-rtx"
 DEFAULT_PORT = 20031
@@ -172,12 +180,35 @@ def _read_log_rows() -> list[dict]:
     return rows
 
 
+def _write_to_influx(metrics: dict) -> None:
+    if not all([INFLUX_URL, INFLUX_ORG, INFLUX_BUCKET, INFLUX_TOKEN]):
+        return
+    line = (
+        f"gpu,host={INFLUX_HOST} "
+        f"temperature_c={metrics['temperature_c']}i,"
+        f"memory_free_mib={metrics['memory_free_mib']}i,"
+        f"utilization_percent={metrics['utilization_percent']}i"
+    )
+    response = requests.post(
+        f"{INFLUX_URL}/api/v2/write",
+        params={"org": INFLUX_ORG, "bucket": INFLUX_BUCKET, "precision": "s"},
+        headers={"Authorization": f"Token {INFLUX_TOKEN}", "Content-Type": "text/plain; charset=utf-8"},
+        data=line,
+        timeout=5.0,
+    )
+    response.raise_for_status()
+
+
 def _metrics_loop(stop_event: threading.Event) -> None:
     interval = _log_interval_seconds()
     while not stop_event.is_set():
         try:
             metrics = _read_gpu_metrics()
             _append_log_row(metrics, None)
+            try:
+                _write_to_influx(metrics)
+            except Exception:
+                pass
         except Exception as exc:
             _append_log_row(None, str(exc))
         stop_event.wait(interval)

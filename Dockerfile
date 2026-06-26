@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip && \
+    apt-get install -y --no-install-recommends ca-certificates python3 python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -9,6 +9,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py entrypoint.sh ./
 
-CMD ["python3", "app.py"]
+CMD ["/bin/sh", "/app/entrypoint.sh"]

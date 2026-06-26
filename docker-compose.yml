@@ -5,9 +5,11 @@ services:
     env_file: .env
     environment:
       - RTX_LOG_PATH=/app/logs/gpu-metrics.csv
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
     ports:
       - "${RTX_PORT:-20031}:${RTX_PORT:-20031}"
     volumes:
       - ${LOG_DIR:-/var/lib/rtx/logs}:/app/logs
+      - /etc/homelab/certs/ca/ca.crt:/usr/local/share/ca-certificates/homelab-ca.crt:ro
     devices:
       - "nvidia.com/gpu=all"
